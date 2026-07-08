@@ -41,21 +41,45 @@ def get_image(w: int, h: int, fmt: str, src: str):
     # ВАЛИДАЦИЯ 2: Проверка физической целостности и структуры картинки
     try:
         with Image.open(original_path) as verify_img:
-            verify_img.verify()  # Быстрая проверка, что файл не битый и является картинкой
+            verify_img.verify()  # Быстрая проверка, что файл не битый
     except Exception:
         raise HTTPException(status_code=400, detail="Файл поврежден или не является валидным изображением JPEG/PNG")
 
-    cache_filename = f"{src}_{w}x{h}.{fmt}"
+    # --- НАЧАЛО ИЗМЕНЕНИЙ: Проверка по размеру против туннелирования macOS ---
+    
+    # Получаем размер оригинального файла в байтах
+    original_size = os.path.getsize(original_path)
+
+    # Добавляем размер (original_size) в имя кэш-файла
+    cache_filename = f"{src}_{w}x{h}_{original_size}.{fmt}"
     cache_path = os.path.join(CACHE_DIR, cache_filename)
 
-    # Логика авто-инвалидации по времени (TTL)
+    # Заголовки, которые ЗАПРЕЩАЮТ браузеру на Mac кэшировать картинку
+    no_browser_cache_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
+
+    # Проверка существования и актуальности кэша
     if os.path.exists(cache_path):
-        file_age = time.time() - os.path.getmtime(cache_path)
-        if file_age > CACHE_TTL_SECONDS:
-            os.remove(cache_path)
+        cache_mtime = os.path.getmtime(cache_path)
+        original_mtime = os.path.getmtime(original_path)
+        file_age = time.time() - cache_mtime
+
+        # Кэш инвалидируется, если он старше TTL ИЛИ если оригинал обновился позже создания кэша
+        if file_age > CACHE_TTL_SECONDS or original_mtime > cache_mtime:
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass  # Игнорируем ошибку, если файл уже удален другим потоком
         else:
-            # Кэш актуален (ГОРЯЧИЙ ЗАПРОС)
-            return FileResponse(cache_path, media_type="image/webp", headers={"X-Cache": "HIT"})
+            # Кэш актуален (ГОРЯЧИЙ ЗАПРОС) + запрещаем кэш браузера
+            return FileResponse(
+                cache_path, 
+                media_type="image/webp", 
+                headers={"X-Cache": "HIT", **no_browser_cache_headers}
+            )      
 
     # Обработка «на лету» (ХОЛОДНЫЙ ЗАПРОС)
     try:
@@ -66,7 +90,12 @@ def get_image(w: int, h: int, fmt: str, src: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {str(e)}")
 
-    return FileResponse(cache_path, media_type="image/webp", headers={"X-Cache": "MISS"})
+    # Возвращаем созданный файл (ХОЛОДНЫЙ ЗАПРОС) + запрещаем кэш браузера
+    return FileResponse(
+        cache_path, 
+        media_type="image/webp", 
+        headers={"X-Cache": "MISS", **no_browser_cache_headers}
+    )
 
 
 # 2. Эндпоинт для принудительной инвалидации кэша (DELETE)
