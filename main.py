@@ -45,21 +45,35 @@ def get_image(w: int, h: int, fmt: str, src: str):
     except Exception:
         raise HTTPException(status_code=400, detail="Файл поврежден или не является валидным изображением JPEG/PNG")
 
-    # --- НАЧАЛО ИЗМЕНЕНИЙ: Проверка по размеру против туннелирования macOS ---
-    
     # Получаем размер оригинального файла в байтах
     original_size = os.path.getsize(original_path)
 
-    # Добавляем размер (original_size) в имя кэш-файла
+    # Добавляем размер (original_size) в имя кэш-файла против туннелирования macOS
     cache_filename = f"{src}_{w}x{h}_{original_size}.{fmt}"
     cache_path = os.path.join(CACHE_DIR, cache_filename)
 
-    # Заголовки, которые ЗАПРЕЩАЮТ браузеру на Mac кэшировать картинку
+    # Заголовки для запрета жесткого кэша браузера
     no_browser_cache_headers = {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0"
     }
+
+    # Функция для расчета процента уменьшения размера
+    def calculate_compression_percent(orig_sz: int, new_path: str) -> str:
+        try:
+            new_sz = os.path.getsize(new_path)
+            if orig_sz <= 0:
+                return "0%"
+            # Считаем, на сколько процентов уменьшился файл
+            saved_percent = ((orig_sz - new_sz) / orig_sz) * 100
+            
+            # Если файл реально уменьшился, выводим процент, иначе пишем 0% (или отрицательный, если увеличился)
+            if saved_percent > 0:
+                return f"{saved_percent:.1f}%"
+            return f"0% (размер увеличился на {abs(saved_percent):.1f}%)"
+        except Exception:
+            return "unknown"
 
     # Проверка существования и актуальности кэша
     if os.path.exists(cache_path):
@@ -67,34 +81,44 @@ def get_image(w: int, h: int, fmt: str, src: str):
         original_mtime = os.path.getmtime(original_path)
         file_age = time.time() - cache_mtime
 
-        # Кэш инвалидируется, если он старше TTL ИЛИ если оригинал обновился позже создания кэша
         if file_age > CACHE_TTL_SECONDS or original_mtime > cache_mtime:
             try:
                 os.remove(cache_path)
             except OSError:
-                pass  # Игнорируем ошибку, если файл уже удален другим потоком
+                pass
         else:
-            # Кэш актуален (ГОРЯЧИЙ ЗАПРОС) + запрещаем кэш браузера
+            # Кэш актуален (ГОРЯЧИЙ ЗАПРОС)
+            compression_text = calculate_compression_percent(original_size, cache_path)
             return FileResponse(
                 cache_path, 
                 media_type="image/webp", 
-                headers={"X-Cache": "HIT", **no_browser_cache_headers}
+                headers={
+                    "X-Cache": "HIT", 
+                    "X-Compression-Saved": compression_text, # <--- Текстовый вывод процентов
+                    **no_browser_cache_headers
+                }
             )      
 
     # Обработка «на лету» (ХОЛОДНЫЙ ЗАПРОС)
     try:
-        # Re-open необходим, так как verify() закрывает дескрипторы файла
         with Image.open(original_path) as img:
             img_resized = img.resize((w, h), Image.Resampling.LANCZOS)
             img_resized.save(cache_path, format="WEBP", quality=80)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {str(e)}")
 
-    # Возвращаем созданный файл (ХОЛОДНЫЙ ЗАПРОС) + запрещаем кэш браузера
+    # Считаем процент для только что созданного файла
+    compression_text = calculate_compression_percent(original_size, cache_path)
+
+    # Возвращаем созданный файл (ХОЛОДНЫЙ ЗАПРОС)
     return FileResponse(
         cache_path, 
         media_type="image/webp", 
-        headers={"X-Cache": "MISS", **no_browser_cache_headers}
+        headers={
+            "X-Cache": "MISS", 
+            "X-Compression-Saved": compression_text, # <--- Текстовый вывод процентов
+            **no_browser_cache_headers
+        }
     )
 
 
