@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  # Название нашего микросервиса в сети Docker
+  image-service:
+    # 1. Говорим Docker собрать образ из текущей папки (ищет Dockerfile)
+    build: .
+    
+    # 2. Имя, которое будет присвоено собранному образу
+    image: hotel-image-service:latest
+    
+    # 3. Имя запущенного контейнера (вместо случайного набора букв)
+    container_name: hotel_service_container
+    
+    # 4. Проброс портов: связываем порт 8000 хоста (ПК) с портом 8000 контейнера
+    ports:
+      - "8000:8000"
+    
+    # 5. Привязка папок (Volumes) — заменяет длинные флаги -v в терминале
+    volumes:
+      - ./hotel_images:/app/hotel_images
+      - ./image_cache:/app/image_cache
+    
+    # 6. Политика перезапуска: если сервер упадет из-за ошибки, Docker сам его поднимет
+    restart: always
